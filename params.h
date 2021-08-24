@@ -43,13 +43,15 @@ public:
         this->addParam(new StringParam(PARAM_OUT_DIR, false));
         this->setInfo(PARAM_OUT_DIR, "Output directory");
 
-        this->addParam(new IntParam(PARAM_DATA, false));
-        this->setInfo(PARAM_DATA, "Set if non-executable pages should be scanned\n"
-            "\t0 - none: do not scan non-executable pages\n"
-            "\t1 - .NET: scan non-executable in .NET applications\n"
-            "\t2 - if no DEP: scan non-exec if DEP is disabled (or if is .NET)\n"
-            "\t3 - always: scan non-executable pages unconditionally"
-        );
+        EnumParam *dataParam = new EnumParam(PARAM_DATA, "data_scan_mode", false);
+        this->addParam(dataParam);
+        if (dataParam) {
+            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_NO_SCAN, "none: do not scan non-executable pages");
+            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_DOTNET, ".NET: scan non-executable in .NET applications");
+            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_NO_DEP, "if no DEP: scan non-exec if DEP is disabled (or if is .NET)");
+            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_ALWAYS, "always: scan non-executable pages unconditionally");
+        }
+        this->setInfo(PARAM_DATA, "Set if non-executable pages should be scanned");
 
         this->addParam(new BoolParam(PARAM_MINDUMP, false));
         this->setInfo(PARAM_MINDUMP, "Create a minidump of the detected process");
@@ -59,6 +61,21 @@ public:
 
         this->addParam(new BoolParam(PARAM_HOOKS, false));
         this->setInfo(PARAM_HOOKS, "Detect hooks and patches");
+
+        //optional: group parameters
+        std::string str_group = "output options";
+        this->addGroup(new ParamGroup(str_group));
+        this->addParamToGroup(PARAM_OUT_DIR, str_group);
+
+        str_group = "scan options";
+        this->addGroup(new ParamGroup(str_group));
+        this->addParamToGroup(PARAM_DATA, str_group);
+        this->addParamToGroup(PARAM_SHELLCODE, str_group);
+        this->addParamToGroup(PARAM_HOOKS, str_group);
+
+        str_group = "dump options";
+        this->addGroup(new ParamGroup(str_group));
+        this->addParamToGroup(PARAM_MINDUMP, str_group);
     }
 
     void fillStruct(t_params_struct &ps)
