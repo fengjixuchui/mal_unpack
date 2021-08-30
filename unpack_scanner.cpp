@@ -5,6 +5,8 @@
 
 #include "process_util.h"
 
+#define WAIT_FOR_PROCESSES 100
+
 void UnpackScanner::args_init(UnpackScanner::t_unp_params &unp_args)
 {
     unp_args.pesieve_args = { 0 };
@@ -32,28 +34,15 @@ bool pesieve_scan(pesieve::t_params args, ScanStats &stats)
 {
     stats.scanned++;
     pesieve::t_report report = PESieve_scan(args);
-    if (report.errors) {
-        return false;
-    }
-    if (report.implanted || report.replaced) {
+    if (report.suspicious) {
         stats.detected++;
-        std::cout << "Found potential payload: " << std::dec << args.pid << std::endl;
+        std::cout << "Found suspicious: " << std::dec << args.pid << std::endl;
         return true;
     }
     return false;
 }
 
-bool get_process_name(IN HANDLE hProcess, OUT LPSTR nameBuf, IN DWORD nameMax)
-{
-    HMODULE hMod;
-    DWORD cbNeeded;
 
-    if (EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded)) {
-        GetModuleBaseNameA(hProcess, hMod, nameBuf, nameMax);
-        return true;
-    }
-    return false;
-}
 
 bool is_searched_process(DWORD processID, const char* searchedName)
 {
@@ -75,23 +64,6 @@ bool is_searched_process(DWORD processID, const char* searchedName)
     return false;
 }
 
-bool UnpackScanner::isTarget(IN DWORD pid)
-{
-    //identify by PID:
-    if (pid == this->unp_args.start_pid) {
-        return true;
-    }
-    //identify by name:
-    if (unp_args.pname.length() == 0) {
-        //the name is undefined, skip
-        return false;
-    }
-    if (is_searched_process(pid, unp_args.pname.c_str())) {
-        return true;
-    }
-    return false;
-}
-
 ScanStats UnpackScanner::scanProcesses(IN std::set<DWORD> pids)
 {
     size_t i = 0;
@@ -107,7 +79,6 @@ ScanStats UnpackScanner::scanProcesses(IN std::set<DWORD> pids)
 #endif
         unp_args.pesieve_args.pid = pid;
         if (pesieve_scan(unp_args.pesieve_args, myStats)) {
-            replaced.insert(pid);
             bool is_killed = false;
             if (unp_args.kill_suspicious) {
                 is_killed = kill_pid(pid);
@@ -120,78 +91,93 @@ ScanStats UnpackScanner::scanProcesses(IN std::set<DWORD> pids)
     return myStats;
 }
 
+size_t UnpackScanner::collectByTheSameName(IN std::set<DWORD> allPids, OUT std::set<DWORD> &targets)
+{
+    const size_t startSize = targets.size();
+    if (unp_args.pname.length() == 0) {
+        // the name is undefined, skip
+        return 0;
+    }
+    std::set<DWORD>::iterator itr;
+    for (itr = allPids.begin(); itr != allPids.end(); ++itr) {
+        const DWORD pid = *itr;
+        if (is_searched_process(pid, unp_args.pname.c_str())) {
+            targets.insert(pid);
+        }
+    }
+    // collect secondary targets: children of all other processes with matching name
+    const size_t tree_depth = 100;
+    for (size_t i = 0; i < tree_depth; i++) {
+        size_t added_new = collectSecondaryTargets(targets, targets);
+        if (added_new == 0) break;
+    }
+    return (targets.size() - startSize);
+}
+
 size_t UnpackScanner::collectTargets()
 {
     const size_t initial_size = allTargets.size();
-
-    DWORD aProcesses[1024], cbNeeded;
-    if (!EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded)) {
-        return 0;
-    }
-    
     std::set<DWORD> mainTargets;
 
-    //calculate how many process identifiers were returned.
-    size_t cProcesses = cbNeeded / sizeof(DWORD);
-    char image_buf[MAX_PATH] = { 0 };
-
-    for (size_t i = 0; i < cProcesses; i++) {
-        if (aProcesses[i] == 0) continue;
-
-        const DWORD pid = aProcesses[i];
-        const DWORD parent = get_parent_pid(pid);
-
-        if (parent != INVALID_PID_VALUE) {\
-            parentToChildrenMap[parent].insert(pid);
-        }
-
-        if (!isTarget(pid)) {
-            //it is not the searched process, so skip it
-            continue;
-        }
-        //std::cout << ">>>>> Adding PID : " << std::dec << pid << " to targets list "<< "\n";
-        allTargets.insert(pid);
-        mainTargets.insert(pid);
+    std::set<DWORD> pids; //all running processes
+    if (!map_processes_parent_to_children(pids, this->parentToChildrenMap)) {
+        std::cerr << "Mapping processes failed!\n";
     }
+
+    // add the initial process to the targets:
+    allTargets.insert(this->unp_args.start_pid);
 
     //collect children of the target: only for the starting PID
-    startingPidTree.insert(this->unp_args.start_pid);
-    const size_t tree_depth = 5;
+    std::set<DWORD> allChildren;
+    allChildren.insert(this->unp_args.start_pid);
+    const size_t tree_depth = 100;
     for (size_t i = 0; i < tree_depth; i++) {
-        size_t added_new = collectSecondaryTargets(startingPidTree);
-        //std::cout << "added new: " << added_new << "\n";
+        size_t added_new = collectSecondaryTargets(allChildren, allChildren);
+#ifdef _DEBUG
+        std::cout << "added new: " << added_new << "\n";
+#endif
+        if (added_new == 0) break;
     }
+    allTargets.insert(allChildren.begin(), allChildren.end());
 
-    //collect secondary targets: children of all other processes with matching name
-    for (size_t i = 0; i < tree_depth; i++) {
-        size_t added_new = collectSecondaryTargets(mainTargets);
-        //std::cout << "added new: " << added_new << "\n";
-    }
+    //collecting by common name with the starting process:
+    std::set<DWORD> byName;
+    size_t added = collectByTheSameName(pids, byName);
+    
+    size_t targetsBefore = allTargets.size();
+    allTargets.insert(byName.begin(), byName.end());
+#ifdef _DEBUG
+    std::cout << "Added by common name: " << (allTargets.size() - targetsBefore) << "\n";
+#endif
     return allTargets.size() - initial_size;
 }
 
-size_t UnpackScanner::collectSecondaryTargets(IN std::set<DWORD> &_primaryTargets)
+size_t UnpackScanner::collectSecondaryTargets(IN std::set<DWORD> &_primaryTargets, OUT std::set<DWORD> &_secondaryTargets)
 {
     size_t initial_size = _primaryTargets.size();
 
     std::set<DWORD>::const_iterator itr;
     for (itr = _primaryTargets.begin(); itr != _primaryTargets.end(); itr++) {
         DWORD pid = *itr;
-        //std::cout << "Searching chldren of: " << pid << "\n";
+#ifdef _DEBUG
+        std::cout << "Searching children of: " << pid << " [" << get_process_name_str(pid) << "]\n";
+#endif
         std::map<DWORD, std::set<DWORD> >::iterator child_itr = parentToChildrenMap.find(pid);
         if (child_itr == parentToChildrenMap.end()) {
             //std::cout << "children not found!\n";
             continue;
         }
+        
         std::set<DWORD> &childrenList = child_itr->second;
+        // add all the children on the process to the targets:
+        _secondaryTargets.insert(childrenList.begin(), childrenList.end());
 
-        allTargets.insert(childrenList.begin(), childrenList.end());
-        _primaryTargets.insert(childrenList.begin(), childrenList.end());
 #ifdef _DEBUG
         std::cout << std::dec << pid << " >>>>> Adding " << childrenList.size() << " children of : " << pid << " to targets list\n";
         std::set<DWORD>::iterator itr;
         for (itr = childrenList.begin(); itr != childrenList.end(); itr++) {
-            std::cout << "Child: " << *itr << "\n";
+            DWORD child_pid = *itr;
+            std::cout << "Child: " << child_pid << " [" << get_process_name_str(child_pid) << "]\n";
         }
 #endif
     }
@@ -200,16 +186,14 @@ size_t UnpackScanner::collectSecondaryTargets(IN std::set<DWORD> &_primaryTarget
 
 ScanStats UnpackScanner::_scan()
 {
-    this->parentToChildrenMap.clear();
     this->allTargets.clear();
-    this->startingPidTree.clear();
 
+    //populate the list as long as new processes are coming...
     size_t collected = -1;
     do {
         collected = collectTargets();
-        Sleep(100);
-    }
-     while (collected != 0);
+        Sleep(WAIT_FOR_PROCESSES);
+    } while (collected != 0);
 
     return scanProcesses(allTargets);
 }
@@ -220,7 +204,7 @@ size_t UnpackScanner::kill_pids(IN std::set<DWORD> &pids)
     std::set<DWORD>::iterator itr;
     for (itr = pids.begin(); itr != pids.end(); itr++) {
         DWORD pid = *itr;
-        if (kill_till_dead_pid(pid)) {
+        if (kill_pid(pid)) {
             remaining--;
         }
     }

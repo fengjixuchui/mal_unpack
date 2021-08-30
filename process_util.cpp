@@ -1,6 +1,8 @@
 #include "process_util.h"
 #include <iostream>
 #include <Psapi.h>
+#include <tlhelp32.h>
+
 #include "pe-sieve\utils\ntddk.h"
 
 HANDLE create_new_process(IN LPSTR exe_path, IN LPSTR cmd, OUT PROCESS_INFORMATION &pi, DWORD flags)
@@ -84,8 +86,15 @@ DWORD get_parent_pid(DWORD dwPID)
 
 bool kill_pid(DWORD pid)
 {
+#ifdef _DEBUG
+    std::cout << "[!] Killing PID: " << std::dec << pid << std::endl;
+#endif
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
     if (!hProcess) {
+        const DWORD err = GetLastError();
+        if (err == ERROR_INVALID_PARAMETER) {
+            return true; // already killed
+        }
         return false;
     }
     bool is_killed = false;
@@ -96,39 +105,6 @@ bool kill_pid(DWORD pid)
     return is_killed;
 }
 
-bool kill_till_dead(HANDLE &proc)
-{
-    bool is_killed = false;
-    //terminate the original process (if not terminated yet)
-    DWORD exit_code = 0;
-    do {
-        GetExitCodeProcess(proc, &exit_code);
-        if (exit_code == STILL_ACTIVE) {
-            TerminateProcess(proc, 0);
-            if (GetLastError() == ERROR_ACCESS_DENIED) {
-                std::cerr << "Could not kill the process: access denied!" << std::endl;
-                break; //process is elevated, cannot kill it:
-            }
-        }
-        else {
-            is_killed = true;
-            break;
-        }
-
-    } while (true);
-    return is_killed;
-}
-
-bool kill_till_dead_pid(DWORD pid)
-{
-    HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-    if (!hProcess) {
-        return false;
-    }
-    bool is_killed = kill_till_dead(hProcess);
-    CloseHandle(hProcess);
-    return is_killed;
-}
 
 /*
 based on: https://support.microsoft.com/en-us/help/131065/how-to-obtain-a-handle-to-any-process-with-sedebugprivilege
@@ -210,4 +186,68 @@ bool set_debug_privilege()
     // close token handle
     CloseHandle(hToken);
     return is_ok;
+}
+
+size_t map_processes_parent_to_children(std::set<DWORD> &pids, std::map<DWORD, std::set<DWORD> > &parentToChildrenMap)
+{
+    size_t count = 0;
+    size_t scanned_count = 0;
+    size_t ignored_count = 0;
+
+    HANDLE hProcessSnapShot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hProcessSnapShot == INVALID_HANDLE_VALUE) {
+        const DWORD err = GetLastError();
+        std::cerr << "[-] Could not create modules snapshot. Error: " << std::dec << err << std::endl;
+        return 0;
+    }
+
+    PROCESSENTRY32 pe32 = { 0 };
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    if (!Process32First(hProcessSnapShot, &pe32)) {
+        CloseHandle(hProcessSnapShot);
+        std::cerr << "[-] Could not enumerate processes. Error: " << GetLastError() << std::endl;
+        return 0;
+    }
+    do {
+        const DWORD pid = pe32.th32ProcessID;
+        const DWORD parent = pe32.th32ParentProcessID;
+        pids.insert(pid);
+
+        if (parent != INVALID_PID_VALUE) {
+            parentToChildrenMap[parent].insert(pid);
+            count++;
+        }
+    } while (Process32Next(hProcessSnapShot, &pe32));
+
+    //close the handles
+    CloseHandle(hProcessSnapShot);
+    return count;
+}
+
+bool get_process_name(IN HANDLE hProcess, OUT LPSTR nameBuf, IN DWORD nameMax)
+{
+    HMODULE hMod;
+    DWORD cbNeeded;
+
+    if (EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded)) {
+        GetModuleBaseNameA(hProcess, hMod, nameBuf, nameMax);
+        return true;
+    }
+    return false;
+}
+
+std::string get_process_name_str(DWORD processID)
+{
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+    if (hProcess == NULL) {
+        return "";
+    }
+    CHAR szProcessName[MAX_PATH];
+    bool is_ok = get_process_name(hProcess, szProcessName, MAX_PATH);
+    CloseHandle(hProcess);
+    if (is_ok) {
+        return szProcessName;
+    }
+    return "";
 }
