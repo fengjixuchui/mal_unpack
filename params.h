@@ -4,6 +4,7 @@
 using namespace paramkit;
 
 #include "unpack_scanner.h"
+#include "util.h"
 
 #define DEFAULT_TIMEOUT 1000
 
@@ -37,8 +38,8 @@ typedef struct {
 class UnpackParams : public Params
 {
 public:
-    UnpackParams()
-        : Params()
+    UnpackParams(const std::string &version)
+        : Params(version)
     {
         this->addParam(new StringParam(PARAM_EXE, true));
         this->setInfo(PARAM_EXE, "Input exe (to be run)");
@@ -46,11 +47,11 @@ public:
         this->addParam(new StringParam(PARAM_CMD, false));
         this->setInfo(PARAM_CMD, "Commandline arguments for the input exe");
 
-        this->addParam(new IntParam(PARAM_TIMEOUT, true));
-        this->setInfo(PARAM_TIMEOUT, "Timeout: ms");
+        this->addParam(new IntParam(PARAM_TIMEOUT, true, IntParam::INT_BASE_DEC));
+        this->setInfo(PARAM_TIMEOUT, "Timeout in miliseconds (0: infinity)");
 
         this->addParam(new StringParam(PARAM_OUT_DIR, false));
-        this->setInfo(PARAM_OUT_DIR, "Output directory");
+        this->setInfo(PARAM_OUT_DIR, "Set a root directory for the output (default: current directory)");
 
         EnumParam *dataParam = new EnumParam(PARAM_DATA, "data_scan_mode", false);
         if (dataParam) {
@@ -61,8 +62,6 @@ public:
             dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_NO_DEP, "if no DEP: scan non-exec if DEP is disabled (or if is .NET)");
             dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_ALWAYS, "always: scan non-executable pages unconditionally");
         }
-
-        
 
         this->addParam(new BoolParam(PARAM_MINDUMP, false));
         this->setInfo(PARAM_MINDUMP, "Create a minidump of the detected process");
@@ -91,62 +90,59 @@ public:
         }
 
         //optional: group parameters
-        std::string str_group = "output options";
+        std::string str_group = "3. output options";
         this->addGroup(new ParamGroup(str_group));
         this->addParamToGroup(PARAM_OUT_DIR, str_group);
 
-        str_group = "scan options";
+        str_group = "1. scan options";
         this->addGroup(new ParamGroup(str_group));
         this->addParamToGroup(PARAM_DATA, str_group);
         this->addParamToGroup(PARAM_SHELLCODE, str_group);
         this->addParamToGroup(PARAM_HOOKS, str_group);
 
-        str_group = "dump options";
+        str_group = "2. dump options";
         this->addGroup(new ParamGroup(str_group));
         this->addParamToGroup(PARAM_MINDUMP, str_group);
         this->addParamToGroup(PARAM_IMP, str_group);
     }
 
+    void printBanner()
+    {
+        std::stringstream ss;
+        ss << "mal_unpack " << this->versionStr;
+#ifdef _WIN64
+        ss << " (x64)" << "\n";
+#else
+        ss << " (x86)" << "\n";
+#endif
+        ss << "Dynamic malware unpacker\n";
+        ss << "Built on: " << __DATE__;
+
+        paramkit::print_in_color(MAKE_COLOR(WHITE, BLACK), ss.str());
+        std::cout << "\n";
+        DWORD pesieve_ver = PESieve_version;
+        std::cout << "using: PE-sieve v." << version_to_str(pesieve_ver) << "\n\n";
+
+        print_in_color(paramkit::WARNING_COLOR, "CAUTION: Supplied malware will be deployed! Use it on a VM only!\n");
+    }
+
     void fillStruct(t_params_struct &ps)
     {
-        StringParam *myExe = dynamic_cast<StringParam*>(this->getParam(PARAM_EXE));
-        if (myExe) {
-            myExe->copyToCStr(ps.exe_path, sizeof(ps.exe_path));
-        }
-        StringParam *myCmd = dynamic_cast<StringParam*>(this->getParam(PARAM_CMD));
-        if (myCmd) {
-            myCmd->copyToCStr(ps.exe_cmd, sizeof(ps.exe_cmd));
-        }
-        StringParam *myDir = dynamic_cast<StringParam*>(this->getParam(PARAM_OUT_DIR));
-        if (myDir) {
-            myDir->copyToCStr(ps.out_dir, sizeof(ps.out_dir));
-        }
-        IntParam *myTimeout = dynamic_cast<IntParam*>(this->getParam(PARAM_TIMEOUT));
-        if (myTimeout) ps.timeout = myTimeout->value;
+        copyCStr<StringParam>(PARAM_EXE, ps.exe_path, sizeof(ps.exe_path));
+        copyCStr<StringParam>(PARAM_CMD, ps.exe_cmd, sizeof(ps.exe_cmd));
+        copyCStr<StringParam>(PARAM_OUT_DIR, ps.out_dir, sizeof(ps.out_dir));
 
-        EnumParam *myData = dynamic_cast<EnumParam*>(this->getParam(PARAM_DATA));
-        if (myData && myData->isSet()) {
-            ps.hh_args.pesieve_args.data = (pesieve::t_data_scan_mode) myData->value;
-        }
-        EnumParam *myTrigger = dynamic_cast<EnumParam*>(this->getParam(PARAM_TRIGGER));
-        if (myTrigger && myTrigger->isSet()) {
-            ps.trigger = (t_term_trigger) myTrigger->value;
-        }
-        BoolParam *myMinidump = dynamic_cast<BoolParam*>(this->getParam(PARAM_MINDUMP));
-        if (myMinidump && myMinidump->isSet()) {
-            ps.hh_args.pesieve_args.minidump = myMinidump->value;
-        }
-        BoolParam *myShellc = dynamic_cast<BoolParam*>(this->getParam(PARAM_SHELLCODE));
-        if (myShellc && myShellc->isSet()) {
-            ps.hh_args.pesieve_args.shellcode = myShellc->value;
-        }
-        BoolParam *myHooks = dynamic_cast<BoolParam*>(this->getParam(PARAM_HOOKS));
-        if (myHooks && myHooks->isSet()) {
-            ps.hh_args.pesieve_args.no_hooks = !(myHooks->value);
-        }
-        EnumParam *myImp = dynamic_cast<EnumParam*>(this->getParam(PARAM_IMP));
-        if (myImp && myImp->isSet()) {
-            ps.hh_args.pesieve_args.imprec_mode = (pesieve::t_imprec_mode)myImp->value;
-        }
+        copyVal<IntParam>(PARAM_TIMEOUT, ps.timeout);
+
+        copyVal<EnumParam>(PARAM_DATA, ps.hh_args.pesieve_args.data);
+        copyVal<EnumParam>(PARAM_TRIGGER, ps.trigger);
+
+        copyVal<BoolParam>(PARAM_MINDUMP, ps.hh_args.pesieve_args.minidump);
+        copyVal<BoolParam>(PARAM_SHELLCODE, ps.hh_args.pesieve_args.shellcode);
+        copyVal<BoolParam>(PARAM_IMP, ps.hh_args.pesieve_args.imprec_mode);
+
+        bool hooks = false;
+        copyVal<BoolParam>(PARAM_HOOKS, hooks);
+        ps.hh_args.pesieve_args.no_hooks = hooks ? false : true;
     }
 };
