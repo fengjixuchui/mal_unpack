@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.8)
+cmake_minimum_required ( VERSION 2.8...3.21 )
 project (mal_unpack)
 option(MU_BUILD_TESTING "enable testing for mal_unpack" ON)
 
@@ -19,12 +19,17 @@ set (srcs
 	main.cpp
 	process_util.cpp
 	unpack_scanner.cpp
+	driver_comm.cpp
+	file_util.cpp
 	util.cpp
 )
 
 set (hdrs
 	process_util.h
 	unpack_scanner.h
+	driver_comm.h
+	file_util.h
+	ntddk.h
 	util.h
 	params.h
 )
@@ -59,6 +64,7 @@ INSTALL( TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_PREFIX} COMPONENT $
 if(MU_BUILD_TESTING)
 	enable_testing()
 
-	# 0) does the application run
-	add_test ( TestRuns ${CMAKE_INSTALL_PREFIX}\\${PROJECT_NAME} )
+	# 0) does the application run?
+	add_test ( TestRuns ${CMAKE_INSTALL_PREFIX}\\${PROJECT_NAME} --help )
+	set_tests_properties(TestRuns PROPERTIES PASS_REGULAR_EXPRESSION "PE-sieve")
 endif()

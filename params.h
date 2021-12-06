@@ -19,6 +19,7 @@ using namespace paramkit;
 #define PARAM_HOOKS "hooks"
 #define PARAM_IMP "imp"
 #define PARAM_TRIGGER "trigger"
+#define PARAM_REFLECTION "refl"
 
 typedef enum {
     TRIG_TIMEOUT = 0,
@@ -53,12 +54,16 @@ public:
         this->addParam(new StringParam(PARAM_OUT_DIR, false));
         this->setInfo(PARAM_OUT_DIR, "Set a root directory for the output (default: current directory)");
 
+        //PARAM_REFLECTION
+        this->addParam(new BoolParam(PARAM_REFLECTION, false));
+        this->setInfo(PARAM_REFLECTION, "Make a process reflection before scan.", "\t   This allows i.e. to force-read inaccessible pages.");
+
         EnumParam *dataParam = new EnumParam(PARAM_DATA, "data_scan_mode", false);
         if (dataParam) {
             this->addParam(dataParam);
             this->setInfo(PARAM_DATA, "Set if non-executable pages should be scanned");
             dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_NO_SCAN, "none: do not scan non-executable pages");
-            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_DOTNET, ".NET: scan non-executable in .NET applications");
+            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_DOTNET, ".NET: scan non-executable in .NET applications [DEFAULT]");
             dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_NO_DEP, "if no DEP: scan non-exec if DEP is disabled (or if is .NET)");
             dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_ALWAYS, "always: scan non-executable pages unconditionally");
         }
@@ -90,20 +95,24 @@ public:
         }
 
         //optional: group parameters
-        std::string str_group = "3. output options";
+        std::string str_group = "1. scanner settings";
         this->addGroup(new ParamGroup(str_group));
-        this->addParamToGroup(PARAM_OUT_DIR, str_group);
+        this->addParamToGroup(PARAM_REFLECTION, str_group);
 
-        str_group = "1. scan options";
+        str_group = "2. scan options";
         this->addGroup(new ParamGroup(str_group));
         this->addParamToGroup(PARAM_DATA, str_group);
         this->addParamToGroup(PARAM_SHELLCODE, str_group);
         this->addParamToGroup(PARAM_HOOKS, str_group);
 
-        str_group = "2. dump options";
+        str_group = "3. dump options";
         this->addGroup(new ParamGroup(str_group));
         this->addParamToGroup(PARAM_MINDUMP, str_group);
         this->addParamToGroup(PARAM_IMP, str_group);
+
+        str_group = "4. output options";
+        this->addGroup(new ParamGroup(str_group));
+        this->addParamToGroup(PARAM_OUT_DIR, str_group);
     }
 
     void printBanner()
@@ -133,16 +142,23 @@ public:
         copyCStr<StringParam>(PARAM_OUT_DIR, ps.out_dir, sizeof(ps.out_dir));
 
         copyVal<IntParam>(PARAM_TIMEOUT, ps.timeout);
-
-        copyVal<EnumParam>(PARAM_DATA, ps.hh_args.pesieve_args.data);
         copyVal<EnumParam>(PARAM_TRIGGER, ps.trigger);
 
-        copyVal<BoolParam>(PARAM_MINDUMP, ps.hh_args.pesieve_args.minidump);
-        copyVal<BoolParam>(PARAM_SHELLCODE, ps.hh_args.pesieve_args.shellcode);
-        copyVal<BoolParam>(PARAM_IMP, ps.hh_args.pesieve_args.imprec_mode);
+        fillPEsieveStruct(ps.hh_args.pesieve_args);
+    }
 
+protected:
+    void fillPEsieveStruct(pesieve::t_params &ps)
+    {
         bool hooks = false;
         copyVal<BoolParam>(PARAM_HOOKS, hooks);
-        ps.hh_args.pesieve_args.no_hooks = hooks ? false : true;
+        ps.no_hooks = hooks ? false : true;
+
+        copyVal<BoolParam>(PARAM_REFLECTION, ps.make_reflection);
+        copyVal<BoolParam>(PARAM_MINDUMP, ps.minidump);
+        copyVal<BoolParam>(PARAM_SHELLCODE, ps.shellcode);
+        copyVal<BoolParam>(PARAM_IMP, ps.imprec_mode);
+        copyVal<EnumParam>(PARAM_DATA, ps.data);
     }
+
 };
