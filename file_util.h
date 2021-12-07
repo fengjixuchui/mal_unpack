@@ -6,5 +6,7 @@
 
 namespace file_util {
 
-	size_t delete_dropped_files(std::set<ULONGLONG>& allDroppedFiles);
+	size_t list_files(std::set<ULONGLONG>& filesIds);
+
+	size_t delete_dropped_files(std::set<ULONGLONG>& filesIds);
 }
