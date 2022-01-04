@@ -36,6 +36,54 @@ typedef struct {
     UnpackScanner::t_unp_params hh_args;
 } t_params_struct;
 
+
+std::string translate_data_mode(const pesieve::t_data_scan_mode &mode)
+{
+    switch (mode) {
+    case pesieve::PE_DATA_NO_SCAN:
+        return "none: do not scan non-executable pages";
+    case pesieve::PE_DATA_SCAN_DOTNET:
+        return ".NET: scan non-executable in .NET applications";
+    case pesieve::PE_DATA_SCAN_NO_DEP:
+        return "if no DEP: scan non-exec if DEP is disabled (or if is .NET)";
+    case pesieve::PE_DATA_SCAN_ALWAYS:
+        return "always: scan non-executable pages unconditionally";
+    case pesieve::PE_DATA_SCAN_INACCESSIBLE:
+        return "include inaccessible: scan non-executable pages unconditionally;\n\t    in reflection mode (/refl): scan also inaccessible pages";
+    case pesieve::PE_DATA_SCAN_INACCESSIBLE_ONLY:
+        return "scan inaccessible pages, but exclude other non-executable;\n\t    works in reflection mode (/refl) only";
+    }
+    return "undefined";
+}
+
+std::string translate_imprec_mode(const pesieve::t_imprec_mode imprec_mode)
+{
+    switch (imprec_mode) {
+    case pesieve::PE_IMPREC_NONE:
+        return "none: do not recover imports";
+    case pesieve::PE_IMPREC_AUTO:
+        return "try to autodetect the most suitable mode";
+    case pesieve::PE_IMPREC_UNERASE:
+        return "unerase the erased parts of the partialy damaged ImportTable";
+    case pesieve::PE_IMPREC_REBUILD0:
+        return "build the ImportTable from scratch, basing on the found IATs:\n\t         use only terminated blocks (restrictive mode)";
+    case pesieve::PE_IMPREC_REBUILD1:
+        return "build the ImportTable from scratch, basing on the found IATs:\n\t         use terminated blocks, or blocks with more than 1 thunk";
+    case pesieve::PE_IMPREC_REBUILD2:
+        return "build the ImportTable from scratch, basing on the found IATs:\n\t         use all found blocks (aggressive mode)";
+    }
+    return "undefined";
+}
+
+bool addDataMode(EnumParam *dataParam, pesieve::t_data_scan_mode mode)
+{
+    if (!dataParam) {
+        return false;
+    }
+    dataParam->addEnumValue(mode, translate_data_mode(mode));
+    return true;
+}
+
 class UnpackParams : public Params
 {
 public:
@@ -62,10 +110,12 @@ public:
         if (dataParam) {
             this->addParam(dataParam);
             this->setInfo(PARAM_DATA, "Set if non-executable pages should be scanned");
-            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_NO_SCAN, "none: do not scan non-executable pages");
-            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_DOTNET, ".NET: scan non-executable in .NET applications [DEFAULT]");
-            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_NO_DEP, "if no DEP: scan non-exec if DEP is disabled (or if is .NET)");
-            dataParam->addEnumValue(pesieve::t_data_scan_mode::PE_DATA_SCAN_ALWAYS, "always: scan non-executable pages unconditionally");
+            addDataMode(dataParam, pesieve::t_data_scan_mode::PE_DATA_NO_SCAN);
+            addDataMode(dataParam, pesieve::t_data_scan_mode::PE_DATA_SCAN_DOTNET);
+            addDataMode(dataParam, pesieve::t_data_scan_mode::PE_DATA_SCAN_NO_DEP);
+            addDataMode(dataParam, pesieve::t_data_scan_mode::PE_DATA_SCAN_ALWAYS);
+            addDataMode(dataParam, pesieve::t_data_scan_mode::PE_DATA_SCAN_INACCESSIBLE);
+            addDataMode(dataParam, pesieve::t_data_scan_mode::PE_DATA_SCAN_INACCESSIBLE_ONLY);
         }
 
         this->addParam(new BoolParam(PARAM_MINDUMP, false));
@@ -89,9 +139,12 @@ public:
         if (impParam) {
             this->addParam(impParam);
             this->setInfo(PARAM_IMP, "in which mode ImportTable should be recovered");
-            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_AUTO, "A", "try to autodetect the most suitable mode [DEFAULT]");
-            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_UNERASE, "U", "unrase the erased parts of partialy damaged ImportTable");
-            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_REBUILD, "R", "rebuild ImportTable from scratch");
+            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_NONE, "N", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_NONE));
+            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_AUTO, "A", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_AUTO) + " [DEFAULT]");
+            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_UNERASE, "U", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_UNERASE));
+            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_REBUILD0, "R0", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_REBUILD0));
+            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_REBUILD1, "R1", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_REBUILD1));
+            impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_REBUILD2, "R2", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_REBUILD2));
         }
 
         //optional: group parameters
@@ -157,7 +210,7 @@ protected:
         copyVal<BoolParam>(PARAM_REFLECTION, ps.make_reflection);
         copyVal<BoolParam>(PARAM_MINDUMP, ps.minidump);
         copyVal<BoolParam>(PARAM_SHELLCODE, ps.shellcode);
-        copyVal<BoolParam>(PARAM_IMP, ps.imprec_mode);
+        copyVal<EnumParam>(PARAM_IMP, ps.imprec_mode);
         copyVal<EnumParam>(PARAM_DATA, ps.data);
     }
 

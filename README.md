@@ -6,7 +6,7 @@
 [![Github Latest Release](https://img.shields.io/github/downloads/hasherezade/mal_unpack/latest/total.svg)](https://github.com/hasherezade/mal_unpack/releases)
 
 [![License](https://img.shields.io/badge/License-BSD%202--Clause-blue.svg)](https://opensource.org/licenses/BSD-2-Clause)
-[![Platform Badge](https://img.shields.io/badge/Windows-0078D6?logo=windows)](https://github.com/hasherezade/pe-mal_unpack)
+[![Platform Badge](https://img.shields.io/badge/Windows-0078D6?logo=windows)](https://github.com/hasherezade/mal_unpack)
 
 Dynamic unpacker based on [PE-sieve](https://github.com/hasherezade/pe-sieve.git).<br/>
 It deploys a packed malware, waits for it to unpack the payload, dumps the payload, and kills the original process.</b>
@@ -21,6 +21,8 @@ mal_unpack.exe /exe <path_to_the_malware> /timeout <timeout: ms>
 ```
 
 **WARNING:** This unpacker deploys the original malware. Use it only on a VirtualMachine.
+
+For the best performance, install [MalUnpackCompanion driver](https://github.com/hasherezade/mal_unpack_drv).
 
 
 ## Clone

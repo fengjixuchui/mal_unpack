@@ -1,4 +1,5 @@
-cmake_minimum_required ( VERSION 2.8...3.21 )
+cmake_minimum_required ( VERSION 3.12.4 )
+
 project (mal_unpack)
 option(MU_BUILD_TESTING "enable testing for mal_unpack" ON)
 
@@ -32,6 +33,12 @@ set (hdrs
 	ntddk.h
 	util.h
 	params.h
+	
+)
+
+set (rsrc
+	version.h
+	mal_unpack.rc
 )
 
 # libs
@@ -51,7 +58,7 @@ set ( PESIEVE_LIB $<TARGET_FILE:pe-sieve> CACHE PATH "PE-sieve library path" )
 
 cmake_policy(SET CMP0015 NEW)
 LINK_DIRECTORIES ( ${PESIEVE_LIB} )
-add_executable ( ${PROJECT_NAME} ${hdrs} ${srcs} main.cpp )
+add_executable ( ${PROJECT_NAME} ${hdrs} ${srcs} ${rsrc} main.cpp )
 target_link_libraries ( ${PROJECT_NAME} ${M_PESIEVE} ${M_PARAMKIT} )
 
 # dependencies
