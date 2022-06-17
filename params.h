@@ -4,11 +4,13 @@
 using namespace paramkit;
 
 #include "unpack_scanner.h"
-#include "util.h"
+#include "util/path_util.h"
+#include "driver_comm.h"
 
 #define DEFAULT_TIMEOUT 1000
 
 #define PARAM_EXE "exe"
+#define PARAM_IMG "img"
 #define PARAM_CMD "cmd"
 #define PARAM_TIMEOUT "timeout"
 #define PARAM_OUT_DIR "dir"
@@ -19,6 +21,7 @@ using namespace paramkit;
 #define PARAM_HOOKS "hooks"
 #define PARAM_CACHE "cache"
 #define PARAM_IMP "imp"
+#define PARAM_NORESPAWN "noresp"
 #define PARAM_TRIGGER "trigger"
 #define PARAM_REFLECTION "refl"
 
@@ -28,15 +31,37 @@ typedef enum {
     COUNT_TRIG
 } t_term_trigger;
 
+typedef enum {
+    NORESP_NO_RESTRICTION = 0,
+    NORESP_DROPPED_FILES = 1,
+    NORESP_ALL_FILES = 2,
+    COUNT_NORESP
+} t_noresp;
+
 typedef struct {
     char exe_path[MAX_PATH];
     char exe_cmd[MAX_PATH];
     char out_dir[MAX_PATH];
+    char img_path[MAX_PATH];
     DWORD timeout;
     t_term_trigger trigger;
+    t_noresp noresp;
     UnpackScanner::t_unp_params hh_args;
 } t_params_struct;
 
+
+std::string version_to_str(DWORD version)
+{
+    BYTE* chunks = (BYTE*)&version;
+    std::stringstream stream;
+    stream << std::hex <<
+        (int)chunks[3] << "." <<
+        (int)chunks[2] << "." <<
+        (int)chunks[1] << "." <<
+        (int)chunks[0];
+
+    return stream.str();
+}
 
 std::string translate_data_mode(const pesieve::t_data_scan_mode &mode)
 {
@@ -93,6 +118,10 @@ public:
     {
         this->addParam(new StringParam(PARAM_EXE, true));
         this->setInfo(PARAM_EXE, "Input exe (to be run)");
+
+        this->addParam(new StringParam(PARAM_IMG, false));
+        this->setInfo(PARAM_IMG, "Path to the image from which the malware was run (may be a DLL or EXE).\n\t   DEFAULT: same as /exe", 
+            "\t   This allows to follow processes respawned from the given image.");
 
         this->addParam(new StringParam(PARAM_CMD, false));
         this->setInfo(PARAM_CMD, "Commandline arguments for the input exe");
@@ -152,6 +181,25 @@ public:
             impParam->addEnumValue(pesieve::t_imprec_mode::PE_IMPREC_REBUILD2, "R2", translate_imprec_mode(pesieve::t_imprec_mode::PE_IMPREC_REBUILD2));
         }
 
+
+        EnumParam* norespParam = new EnumParam(PARAM_NORESPAWN, "respawn_protect", false);
+        if (norespParam) {
+
+            std::stringstream ss;
+            ss << "Protect against malware respawning after the unpacking session finished";
+
+            this->addParam(norespParam);
+            if (!driver::is_ready()) {
+                norespParam->setActive(false);
+                ss << "\n" << std::string(INFO_SPACER) + "(to activate, install MalUnpackCompanion driver)";
+            }
+            this->setInfo(PARAM_NORESPAWN, ss.str(),
+                std::string(INFO_SPACER) + "WARNING: this will cause your sample to be restricted by the driver\n");
+            norespParam->addEnumValue(t_noresp::NORESP_NO_RESTRICTION, "N", "disabled: allow the malware to be rerun freely [DEFAULT]");
+            norespParam->addEnumValue(t_noresp::NORESP_DROPPED_FILES, "D", "dropped files: block dropped files");
+            norespParam->addEnumValue(t_noresp::NORESP_ALL_FILES, "A", "all: block all associated files (including the main sample)");
+        }
+
         //optional: group parameters
         std::string str_group = "1. scanner settings";
         this->addGroup(new ParamGroup(str_group));
@@ -177,7 +225,7 @@ public:
     void printBanner()
     {
         std::stringstream ss;
-        ss << "mal_unpack " << this->versionStr;
+        ss << "MalUnpack v." << this->versionStr;
 #ifdef _WIN64
         ss << " (x64)" << "\n";
 #else
@@ -190,6 +238,7 @@ public:
         std::cout << "\n";
         DWORD pesieve_ver = PESieve_version;
         std::cout << "using: PE-sieve v." << version_to_str(pesieve_ver) << "\n\n";
+        std::cout << "MalUnpackCompanion: " << getDriverInfo(false) << "\n\n";
 
         print_in_color(paramkit::WARNING_COLOR, "CAUTION: Supplied malware will be deployed! Use it on a VM only!\n");
     }
@@ -197,16 +246,55 @@ public:
     void fillStruct(t_params_struct &ps)
     {
         copyCStr<StringParam>(PARAM_EXE, ps.exe_path, sizeof(ps.exe_path));
+        copyCStr<StringParam>(PARAM_IMG, ps.img_path, sizeof(ps.img_path));
         copyCStr<StringParam>(PARAM_CMD, ps.exe_cmd, sizeof(ps.exe_cmd));
         copyCStr<StringParam>(PARAM_OUT_DIR, ps.out_dir, sizeof(ps.out_dir));
 
         copyVal<IntParam>(PARAM_TIMEOUT, ps.timeout);
         copyVal<EnumParam>(PARAM_TRIGGER, ps.trigger);
-
+        copyVal<EnumParam>(PARAM_NORESPAWN, ps.noresp);
         fillPEsieveStruct(ps.hh_args.pesieve_args);
     }
 
+    virtual void printVersionInfo()
+    {
+        if (versionStr.length()) {
+            std::cout << "MalUnpack: v." << versionStr << std::endl;
+            std::cout << "MalUnpackCompanion: "<<  getDriverInfo(true) << std::endl;
+        }
+    }
+
 protected:
+    std::string getDriverInfo(bool showNodes)
+    {
+        ULONGLONG nodesCount = 0;
+        ULONGLONG *nodesCountPtr = &nodesCount;
+        char buf[100] = { 0 };
+        if (!showNodes) {
+            nodesCountPtr = nullptr;
+        }
+
+        driver::DriverStatus status = driver::get_version(buf, _countof(buf), nodesCountPtr);
+
+        switch (status) {
+        case driver::DriverStatus::DRIVER_UNAVAILABLE:
+            return "driver not loaded";
+        case driver::DriverStatus::DRIVER_NOT_RESPONDING:
+            return "ERROR - driver not responding";
+        case driver::DriverStatus::DRIVER_OK:
+            if (buf) {
+                std::stringstream ss;
+                ss << "v." << std::string(buf);
+                if (showNodes) {
+                    ss << " (active sessions: " << std::dec << nodesCount << ")";
+                }
+                return ss.str();
+            }
+        default:
+            return "could not fetch the version";
+        }
+    }
+
     void fillPEsieveStruct(pesieve::t_params &ps)
     {
         bool hooks = false;

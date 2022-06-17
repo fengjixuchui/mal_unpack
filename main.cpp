@@ -14,25 +14,66 @@
 #include <pe_sieve_return_codes.h>
 
 #include "unpack_scanner.h"
-#include "process_util.h"
-#include "util.h"
 #include "version.h"
+
+#include "util/process_util.h"
+#include "util/path_util.h"
+#include "util/file_util.h"
 
 #define WAIT_FOR_PROCESS_TIMEOUT 5000
 
 #define VERSION VER_FILEVERSION_STR
+#define LOG_FILE_NAME "unpack.log"
 
-void save_report(std::string file_name, ScanStats &finalStats)
+void print_log_hdr(std::wofstream &report, const time_t& session_timestamp, const t_params_struct& params)
 {
-    std::ofstream report;
-    std::string report_name = "unpack.log";
+    report << "[" << session_timestamp << "] ";
+
+    const char* exe_name = get_file_name(params.exe_path);
+    const char* img_name = get_file_name(params.img_path);
+    if (exe_name) {
+        report << exe_name;
+    }
+    if (img_name && exe_name && 
+        strlen(img_name) && strcmp(img_name, exe_name) != 0)
+    {
+        report << " (" << img_name << ")";
+    }
+    report << " : ";
+}
+
+void save_unpack_report(const time_t &session_timestamp, t_params_struct &params, const ScanStats& finalStats)
+{
+    std::wofstream report;
+    std::string report_name = LOG_FILE_NAME;
     report.open(report_name, std::ofstream::out | std::ofstream::app);
-    report << file_name << " : ";
+    print_log_hdr(report, session_timestamp, params);
+
     if (finalStats.detected) {
-        report << "Unpacked in: " << std::dec << finalStats.scanTime << " milliseconds\n";
+        report << "Unpacked in: " << std::dec << finalStats.scanTime << " ms\n";
     }
     else {
         report << "Failed to unpack\n";
+    }
+    report.close();
+}
+
+void save_remaing_files_report(const time_t& session_timestamp, t_params_struct& params, UnpackScanner& scanner)
+{
+    std::map<LONGLONG, std::wstring> names;
+    if (!scanner.listExistingDroppedFiles(names)) {
+        return;
+    }
+
+    std::wofstream report;
+    std::string report_name = LOG_FILE_NAME;
+    report.open(report_name, std::ofstream::out | std::ofstream::app);
+    print_log_hdr(report, session_timestamp, params);
+
+    report << "Failed to delete files (" << std::dec << names.size() << "):\n";
+    std::map<LONGLONG, std::wstring>::const_iterator itr;
+    for (itr = names.begin(); itr != names.end(); ++itr) {
+        report << "> \"" << itr->second << "\"\n";
     }
     report.close();
 }
@@ -44,6 +85,43 @@ void init_defaults(t_params_struct &params)
 #ifdef _DEFAULT_CACHE
     params.hh_args.pesieve_args.use_cache = true;
 #endif
+}
+
+bool get_watched_file_id(const t_params_struct& params, ULONGLONG &file_id)
+{
+    bool is_diffrent = false;
+    file_id = FILE_INVALID_FILE_ID;
+
+    if (strnlen(params.img_path, MAX_PATH) > 0
+        && strncmp(params.img_path, params.exe_path, MAX_PATH) != 0)
+    {
+        file_id = file_util::get_file_id(params.img_path);
+        is_diffrent = true;
+    }
+    if (file_id == FILE_INVALID_FILE_ID) {
+        file_id = file_util::get_file_id(params.exe_path);
+        is_diffrent = false;
+    }
+    if (is_diffrent) {
+        std::cout << "[*] Watch respawns from the IMG: " << params.img_path << "\n";
+    }
+    else {
+        std::cout << "[*] Watch respawns from main EXE file: " << params.exe_path << "\n";
+    }
+    return is_diffrent;
+}
+
+bool set_output_dir(pesieve::t_params& args, const char* new_dir)
+{
+    if (!new_dir) return false;
+
+    size_t new_len = strlen(new_dir);
+    size_t buffer_len = sizeof(args.output_dir);
+    if (new_len > buffer_len) return false;
+
+    memset(args.output_dir, 0, buffer_len);
+    memcpy(args.output_dir, new_dir, new_len);
+    return true;
 }
 
 int main(int argc, char* argv[])
@@ -66,10 +144,10 @@ int main(int argc, char* argv[])
     }
     uParams.fillStruct(params);
     if (params.hh_args.pesieve_args.use_cache) {
-        std::cerr << "[*] Cache is Enabled!" << std::endl;
+        std::cout << "[*] Cache is Enabled!" << std::endl;
     }
     else {
-        std::cerr << "[*] Cache is Disabled!" << std::endl;
+        std::cout << "[*] Cache is Disabled!" << std::endl;
     }
     params.hh_args.kill_suspicious = true;
     // if the timeout was chosen as the trigger, don't interfere in the process:
@@ -86,11 +164,11 @@ int main(int argc, char* argv[])
     std::cout << "Starting the process: " << params.exe_path << std::endl;
     std::cout << "With commandline: \"" << params.exe_cmd << "\"" << std::endl;
 
-    char* file_name = get_file_name(params.exe_path);
+    std::string file_name = get_file_name(params.exe_path);
     std::cout << "Exe name: " << file_name << std::endl;
 
     DWORD timeout = params.timeout;
-    std::string root_dir = std::string(file_name) + ".out";
+    std::string root_dir = file_name + ".out";
     if (strlen(params.out_dir) > 0) {
         root_dir = std::string(params.out_dir) + "\\" + root_dir;
     }
@@ -98,16 +176,21 @@ int main(int argc, char* argv[])
 
     t_pesieve_res ret_code = PESIEVE_ERROR;
     const DWORD flags = DETACHED_PROCESS | CREATE_NO_WINDOW;
-    HANDLE proc = make_new_process(params.exe_path, params.exe_cmd, flags);
+
+    ULONGLONG file_id = FILE_INVALID_FILE_ID;
+    bool is_img_diff = get_watched_file_id(params, file_id);
+    HANDLE proc = make_new_process(params.exe_path, params.exe_cmd, flags, file_id, params.noresp);
     if (!proc) {
         std::cerr << "Could not start the process!" << std::endl;
         return ret_code;
     }
-
-    params.hh_args.pname = file_name;
+    params.hh_args.is_main_module = is_img_diff ? false : true;
+    params.hh_args.module_path = (is_img_diff) ? file_util::get_file_path(params.img_path) : file_util::get_file_path(params.exe_path);
+    std::wcout << "Module Path retrieved: " << params.hh_args.module_path << "\n";
     params.hh_args.start_pid = GetProcessId(proc);
 
-    std::string out_dir = make_dir_name(root_dir, time(NULL));
+    const time_t session_timestamp = time(NULL);
+    const std::string out_dir = make_dir_name(root_dir, session_timestamp, "scan_");
     set_output_dir(params.hh_args.pesieve_args, out_dir.c_str());
 
     ULONGLONG start_tick = GetTickCount64();
@@ -150,25 +233,30 @@ int main(int argc, char* argv[])
     finalStats.scanTime = GetTickCount64() - start_tick;
     
     //this works only with the companion driver:
-    if (scanner.collectDroppedFiles()) {
+    if (scanner.collectDroppedFiles(file_id)) {
         std::cout << "The process dropped some files!\n";
     }
 
-    save_report(file_name, finalStats);
+    save_unpack_report(session_timestamp, params, finalStats);
 
     if (is_unpacked) {
         std::cout << "Unpacked in: " << std::dec << finalStats.scanTime << " milliseconds; " << count << " attempts." << std::endl;
         ret_code = PESIEVE_DETECTED;
     }
-
-    if (kill_pid(GetProcessId(proc))) {
+    if (kill_pid(params.hh_args.start_pid)) {
         std::cout << "[OK] The initial process got killed." << std::endl;
     }
     CloseHandle(proc);
+
     size_t remaining = scanner.killRemaining();
     if (remaining > 0) {
-        std::cout << "WARNING: " << remaining << " of the related processes are not killed" << std::endl;
+        std::cerr << "WARNING: " << remaining << " of the related processes are not killed" << std::endl;
     }
-    
+    if (scanner.deleteDroppedFiles(session_timestamp) > 0) {
+        if (params.noresp != t_noresp::NORESP_NO_RESTRICTION) {
+            std::cerr << "WARNING: The session will remain active as long as the dropped files are not deleted!" << std::endl;
+        }
+    }
+    save_remaing_files_report(session_timestamp, params, scanner);
     return ret_code;
 }
